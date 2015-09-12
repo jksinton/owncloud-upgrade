@@ -68,11 +68,9 @@ from pwd import getpwnam
 ##################################################################
 def getConfig():
     backupTime=datetime.datetime.now().strftime('%Y-%m-%d_%H%M%S')
-    wwwUser='www-data'
-    backupRoot='/var/owncloud.bak'
-    #backupRoot='/storage/owncloud/backups'
-    wwwRoot='/var/www'
-    #wwwRoot='/storage/www/ssl_html/owncloud'
+    wwwUser='www-data' # Set wwwUser to the user running your web server, e.g., www-data on Ubuntu
+    wwwRoot='/var/www' # Set wwwRoot to the path where your root http files are hosted, i.e. where ownCloud is installed
+    backupRoot='/var/owncloud.bak' # Set backupRoot to the path where backups will be stored
     ocDir=wwwRoot + '/owncloud'
     dataPath=wwwRoot + '/data'
     ocDB='owncloud'
