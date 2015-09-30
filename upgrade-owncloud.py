@@ -62,42 +62,107 @@ import zipfile
 from pwd import getpwnam
 
 ##################################################################
-#Function Name: getConfig
+#Class Name:    ownCloud
 #Parameters:    none
-#Purpose:       Set default configuration parameters
-#		@main
+#Purpose:       Stores ownCloud parameters and run installation
 ##################################################################
-def getConfig():
-    backupTime=datetime.datetime.now().strftime('%Y-%m-%d_%H%M%S')
-    wwwUser='www-data' # Set wwwUser to the user running your web server, e.g., www-data on Ubuntu
-    wwwRoot='/var/www' # Set wwwRoot to the path where your root http files are hosted, i.e. where ownCloud is installed
-    backupRoot='/var/owncloud.bak' # Set backupRoot to the path where backups will be stored
-    ocDir=wwwRoot + '/owncloud'
-    dataPath=wwwRoot + '/data'
-    ocDB='owncloud'
-    dbUser='owncloud'
-    dbPwd='owncloud'
-    
-    configDict = {  "wwwUser":wwwUser,
-                    "backupRoot":backupRoot,
-                    "wwwRoot":wwwRoot,
-                    "ocDir":ocDir,
-                    "dataPath":dataPath,
-                    "backupTime":backupTime,
-                    "ocDB":ocDB,
-                    "dbUser":dbUser,
-                    "dbPwd":dbPwd,
-                    "updateIsAvalable":False,
-                    "ocVersion":None,
-                    "ocVersionString":None,
-                    "backupDir":None,
-                    "backupDB":None,
-                    "code":None,
-                    "updateURL":None,
-                    "updateVersionString":None
-                 }
-    
-    return configDict
+class ownCloud():
+    def __init__(self):
+        ocDir='owncloud'
+        dataDir='data'
+        self.wwwUser='www-data' # Set wwwUser to the user running your web server, e.g., www-data on Ubuntu
+        self.wwwPath='/var/www' # Set wwwPath to the path where your root http files are hosted, i.e. where ownCloud is installed
+        self.backupPath='/var/owncloud.bak' # Set backupPath to the path where backups will be stored
+        self.ocPath=self.wwwPath + '/' + ocDir
+        self.dataPath=self.wwwPath + '/' + dataDir
+        self.backupTime=datetime.datetime.now().strftime('%Y-%m-%d_%H%M%S')
+        self.dbType=None
+        self.dbName=None
+        self.dbUser=None
+        self.dbPassword=None
+        self.updateIsAvalable=False
+        self.ocVersion=None
+        self.ocVersionString=None
+        self.backupDir=None
+        self.backupDB=None
+        self.upgradeCodeFileName=None
+        self.updateURL=None
+        self.updateVersionString=None
+
+    ##################################################################
+    #Function Name: getOCVersion
+    #Parameters:    self
+    #Purpose:       Set current version of ownCloud installed in
+    #               version.php
+    #		    @checkUpdate
+    ##################################################################
+    def getOCVersion(self):
+        print "\nGetting current version of ownCloud that is installed . . ."
+        vFileName=self.ocPath +'/version.php'
+        cmd=['/usr/bin/php','-r','include "'+vFileName+'"; echo json_encode(array($OC_Version,$OC_VersionString));']
+        self.ocVersion, self.ocVersionString=json.loads(subprocess.check_output(cmd))
+        print "Current Version Installed:  " + self.ocVersionString
+
+    ##################################################################
+    #Function Name: getOCconfig
+    #Parameters:    self
+    #Purpose:       Return config parameters
+    #		    @checkUpdate
+    ##################################################################
+    def getOCConfig(self):
+        print "\nGetting database parameters and path to 'data' . . ."
+        cFileName=self.ocPath + '/config/config.php'
+        cmd=['/usr/bin/php','-r','include "'+cFileName+'"; echo json_encode($CONFIG);']
+        c=json.loads(subprocess.check_output(cmd))
+        self.dataPath=c['datadirectory']
+        self.dbType=c['dbtype']
+        self.dbName=c['dbname']
+        self.dbUser=c['dbuser']
+        self.dbPassword=c['dbpassword']
+
+
+    ##################################################################
+    #Function Name: checkUpdate
+    #Parameters:    self
+    #Purpose:       check if an update is available
+    #               @main
+    ##################################################################
+    def checkUpdate(self):
+        # Exmample url syntax to query owncloud.com for update:
+        # https://apps.owncloud.com/updater.php?version=8x0x6x2xxxstablexx
+        secureHost="apps.owncloud.com"
+        version = 'x'.join([str(i) for i in self.ocVersion])
+        #version = '8x0x6x2'
+        url="/updater.php?version=" +version+ "xxxstablexx"
+        print '\nChecking to see if an update is available using:\n\thttps://' + secureHost + url
+        connection = httplib.HTTPSConnection(secureHost)
+        connection.request("GET",url)
+        response = connection.getresponse()
+        print "\nResponse status from owncloud.com:  "
+        print response.status, response.reason
+        data=response.read()
+        print "\nownCloud.com returned this XML:"
+        print data
+        #xml = ET.ElementTree(ET.fromstring(data))
+        xml = ET.fromstring(data)
+        print "Reading the XML data . . ." 
+        #print xml
+        for element in xml.iter('versionstring'):
+            if element.text is not None:
+                updateVersionString=element.text
+                self.updateVersionString=updateVersionString
+                print "\t" +element.text + " is available."
+        for element in xml.iter('url'):
+            if element.text is not None:
+                updateURL=element.text
+                print "\tCode:\t\t" + updateURL
+                self.updateURL=updateURL
+                self.updateIsAvailable = True
+            else:
+                self.updateIsAvailable = False
+        for element in xml.iter('web'):
+            if element.text is not None:
+                print "\tInstructions:\t" + element.text
 
 ##################################################################
 #Function Name: getArgs
@@ -109,43 +174,17 @@ def getConfig():
 def getArgs():
     version='0.1.5'
     parser = argparse.ArgumentParser(description='This upgrades owncloud.')
-    parser.add_argument('-c','--code',help='tarball of new code')
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('-c','--code',help='tarball of new code')
+    group.add_argument('--check',help='check for update',action="store_true")
+    group.add_argument('--install',help='check for update, download it, install it',action="store_true")
+    group.add_argument('-b','--backup',help='backup owncloud',action="store_true")
+    parser.add_argument('--no-backup',help='do not backup owncloud',action="store_true")
+    parser.add_argument('-f','--force-install',help='answers yes to everything',action="store_true")
     parser.add_argument('-v','--version',action='version', version='%(prog)s %(version)s' % {"prog": parser.prog, "version": version})
     parser.add_argument('-d','--debug',help='print debug messages',action="store_true")
 
     return parser.parse_args()
-
-##################################################################
-#Function Name: getOCVersion
-#Parameters:    configDict
-#Purpose:       Return current version of ownCloud installed in
-#               version.php
-#		@checkUpdate
-##################################################################
-def getOCVersion(configDict):
-    print "\nGetting current version of ownCloud that is installed . . ."
-    vFileName=configDict['ocDir']+'/version.php'
-    cmd=['/usr/bin/php','-r','include "'+vFileName+'"; echo json_encode(array($OC_Version,$OC_VersionString));']
-    configDict['ocVersion'], configDict['ocVersionString']=json.loads(subprocess.check_output(cmd))
-    print "Current Version Installed:  " + configDict['ocVersionString']
-    return configDict
-
-##################################################################
-#Function Name: getOCconfig
-#Parameters:    configDict
-#Purpose:       Return config parameters
-#		@checkUpdate
-##################################################################
-def getOCconfig(configDict):
-    print "\nGetting database parameters and path to 'data' . . ."
-    cFileName=configDict['ocDir']+'/config/config.php'
-    cmd=['/usr/bin/php','-r','include "'+cFileName+'"; echo json_encode($CONFIG);']
-    c=json.loads(subprocess.check_output(cmd))
-    configDict['dataPath']=c['datadirectory']
-    configDict['ocDB']=c['dbname']
-    configDict['dbUser']=c['dbuser']
-    configDict['dbPwd']=c['dbpassword']
-    return configDict
 
 ##################################################################
 #Function Name: checkOCVersion
@@ -503,28 +542,31 @@ def askYesorNo(question, default="yes"):
 def main():
     # read configuration file
     # if it does not exist set default
-    configDict=getConfig()
-    configDict=getOCVersion(configDict)
+    ocOld = ownCloud()
+    ocOld.getOCVersion()
+    ocOld.getOCConfig()
     # Get command line arguments
     args=getArgs()
     if args.code:
-        configDict['code']=args.code
-        configDict=backupOC(configDict)
-        question="Do you want to install " +configDict['code']+ "?"
+        ocOld.upgradeCodeFileName=args.code
+        ocOld.backupOC()
+        question="Do you want to install " +ocOld.upgradeFileName+ "?"
         if askYesorNo(question,"yes") is "yes":
-            installUpgrade(configDict)
-    else:
+            ocOld.installUpgrade()
+    if args.check:
+        ocOld.checkUpdate()
+    if args.install:
         # check if an update is available
         # if there is one
         # ask whether to install it
         # backup code and database
         # install upgrade
-        configDict=checkUpdate(configDict)
-        if(configDict['updateIsAvailable']):
-            configDict=backupOC(configDict)
-            question="Do you want to install " +configDict['updateVersionString']+ "?"
+        ocOld.checkUpdate()
+        if(ocOld.updateIsAvailable):
+            ocOld.backupOC()
+            question="Do you want to install " +ocOld.updateVersionString+ "?"
             if askYesorNo(question,"yes") is "yes":
-                installUpgrade(configDict)
+                ocOld.installUpgrade()
         else:
             print "You are on a current stable release.  No update is available."
 main()
