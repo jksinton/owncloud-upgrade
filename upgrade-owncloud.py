@@ -120,7 +120,6 @@ class ownCloud():
         self.dbUser=c['dbuser']
         self.dbPassword=c['dbpassword']
 
-
     ##################################################################
     #Function Name: checkUpdate
     #Parameters:    self
@@ -143,10 +142,8 @@ class ownCloud():
         data=response.read()
         print "\nownCloud.com returned this XML:"
         print data
-        #xml = ET.ElementTree(ET.fromstring(data))
         xml = ET.fromstring(data)
         print "Reading the XML data . . ." 
-        #print xml
         for element in xml.iter('versionstring'):
             if element.text is not None:
                 updateVersionString=element.text
@@ -163,6 +160,154 @@ class ownCloud():
         for element in xml.iter('web'):
             if element.text is not None:
                 print "\tInstructions:\t" + element.text
+
+    ##################################################################
+    #Function Name: backupOC
+    #Parameters:    self
+    #Purpose:       backup ownCloud
+    #		    @main
+    ##################################################################
+    def backupOC(self):
+        self.backupDir=self.backupPath + '/oc_' + self.ocVersionString + '_' + self.backupTime
+        self.backupDB=self.backupPath + '/owncloud_' + self.ocVersionString + '_' + self.backupTime +'.sql'
+    
+        # place owncloud server into maintenance mode
+        print "\n"
+        print "Placing owncloud server into maintainance mode..."
+        cmd = ['sudo','-u',self.wwwUser, '/usr/bin/php', self.ocPath + '/occ', 'maintenance:mode', '--on']
+        out, err = subprocess.Popen(cmd,stdout=subprocess.PIPE, stderr=subprocess.PIPE ).communicate()
+        print out
+    
+        # backup owncloud installation
+        print "\n"
+        print "Backing up owncloud code . . ."
+        print "\tcopying old code to backup directory"
+        shutil.copytree(self.ocPath,self.backupDir)
+        print "\tresetting secure permssions across backup"
+        securePermissions(self.backupDir,self.wwwUser,None)
+         
+        # backup owncloud database
+        print "\n"
+        print "Backing up owncloud database . . ."
+        cmd = ['sudo','mysqldump','--result-file='+self.backupDB,'-u',self.dbUser, '--password='+self.dbPassword, self.dbName]
+        out, err = subprocess.Popen(cmd,stdout=subprocess.PIPE, stderr=subprocess.PIPE ).communicate()
+        print out
+    
+        with open(self.backupDB,'rb') as backupDB, gzip.open(self.backupDB + '.gz','wb') as gzipDB:
+            shutil.copyfileobj(backupDB,gzipDB)
+        backupDB.close()
+        gzipDB.close()
+        # remove backupDB
+        try:
+            os.remove(self.backupDB)
+        except OSError, e:
+            print ("Error:  %s - %s." % (e.filename,e.strerror))
+
+    ##################################################################
+    #Function Name: checkOCVersion
+    #Parameters:    self
+    #Purpose:       Check if current version of ownCloud installed
+    #               differs from previous version installed
+    #		    @installUpgrade
+    ##################################################################
+    def checkOCVersion(self):
+        vFileName=self.ocPath+'/version.php'
+        cmd=['/usr/bin/php','-r','include "'+vFileName+'"; echo json_encode(array($OC_Version,$OC_VersionString));']
+        ocVersion, ocVersionString=json.loads(subprocess.check_output(cmd))
+        print "\n"
+        print "Previous Version Installed:  " + self.ocVersionString
+        print "Current Version Installed:  " + ocVersionString
+        if ocVersion != self.ocVersion:
+            print "\n"
+            print "The versions do not match."
+            print "Installation seems to be successful.  You may proceed with upgrade . . ."
+            return True
+        else:
+            print "The versions match."
+            print "Installation failed.  You should fix this then proceed with upgrade . . ."
+            return False
+
+    ##################################################################
+    #Function Name: installUpgrade
+    #Parameters:    self
+    #Purpose:       Install upgrade code
+    #	      	    @main
+    ##################################################################
+    def installUpgrade(self):
+        # stopping web server
+        print "\n"
+        print "Stopping web server"
+        cmd = ['sudo','service','apache2', 'stop']
+        out, err = subprocess.Popen(cmd,stdout=subprocess.PIPE, stderr=subprocess.PIPE ).communicate()
+        print out
+
+        print "\n"
+        print "Setting up new release for installation . . ."
+        
+        if self.upgradeCodeFileName is None and self.updateURL is not None:
+            # download new release
+            codeFileName=self.wwwPath + '/'+self.updateURL.split('/')[-1]
+            downloadFile(self.updateURL,codeFileName)
+        else:
+            codeFileName=self.upgradeCodeFileName
+
+        if tarfile.is_tarfile(codeFileName): 
+            try:
+                shutil.rmtree(self.ocPath)
+            except OSError, e:
+                print ("Error:  %s - %s." % (e.filename,e.strerror))
+            extractall(codeFileName,self.wwwPath+'/')
+        elif zipfile.is_zipfile(codeFileName):
+            try:
+                shutil.rmtree(self.ocPath)
+            except OSError, e:
+                print ("Error:  %s - %s." % (e.filename,e.strerror))
+            extractall(codeFileName,self.wwwPath+'/')
+        else:
+            print codeFileName + " does not seem to be a tarball or a zip file."
+            return False
+
+        # Restoring config.php
+        if os.path.isfile(self.backupDir+'/config/config.php'):
+            print "\n"
+            print "Restoring config.php"
+            shutil.copy(self.backupDir+'/config/config.php',self.ocPath+'/config/config.php')
+        else:
+            print "You must restore config.php before running occ upgrade script; no backup was found in "+self.backupDir
+    
+        # Setting secure permissions
+        print "\n"
+        print "Setting secure permissions . . ."
+        securePermissions(self.ocPath,self.wwwUser,self.dataPath)
+
+        # stopping web server
+        print "\n"
+        print "Starting web server"
+    
+        cmd = ['sudo','service','apache2', 'start']
+        out, err = subprocess.Popen(cmd,stdout=subprocess.PIPE, stderr=subprocess.PIPE ).communicate()
+        print out
+    
+        # Check version
+        if self.checkOCVersion():
+            # Ask whether you want to run the upgrade script
+            question="Please check that updated code has been correctly installed in "+self.ocPath+".\nDo you want to run the occ upgrade script?"
+            if askYesorNo(question,"yes") is "yes":
+                # Upgrade owncloud
+                print "\n"
+                print "Upgrading owncloud . . ."
+                cmd = ['sudo','-u',self.wwwUser, '/usr/bin/php', self.ocPath+'/occ', 'upgrade']
+                out, err = subprocess.Popen(cmd,stdout=subprocess.PIPE, stderr=subprocess.PIPE ).communicate()
+                print out
+    
+                # Disable maintenance mode
+                print "\n"
+                print "Taking owncloud online"
+                cmd = ['sudo','-u',self.wwwUser, '/usr/bin/php', self.ocPath+'/occ', 'maintenance:mode', '--off']
+                out, err = subprocess.Popen(cmd,stdout=subprocess.PIPE, stderr=subprocess.PIPE ).communicate()
+                print out
+    
+                print "Installation is complete . . ."
 
 ##################################################################
 #Function Name: getArgs
@@ -185,30 +330,6 @@ def getArgs():
     parser.add_argument('-d','--debug',help='print debug messages',action="store_true")
 
     return parser.parse_args()
-
-##################################################################
-#Function Name: checkOCVersion
-#Parameters:    configDict
-#Purpose:       Check if current version of ownCloud installed
-#               differs from previous version installed
-#		@installUpgrade
-##################################################################
-def checkOCVersion(configDict):
-    vFileName=configDict['ocDir']+'/version.php'
-    cmd=['/usr/bin/php','-r','include "'+vFileName+'"; echo json_encode(array($OC_Version,$OC_VersionString));']
-    ocVersion, ocVersionString=json.loads(subprocess.check_output(cmd))
-    print "\n"
-    print "Previous Version Installed:  " + configDict['ocVersionString']
-    print "Current Version Installed:  " + ocVersionString
-    if ocVersion != configDict['ocVersion']:
-        print "\n"
-        print "The versions do not match."
-        print "Installation seems to be successful.  You may proceed with upgrade . . ."
-        return True
-    else:
-        print "The versions match."
-        print "Installation failed.  You should fix this then proceed with upgrade . . ."
-        return False
 
 ##################################################################
 #Function Name: chownR
@@ -252,7 +373,8 @@ def securePermissions(path='/var/www/owncloud',wwwUser='www-data',dataPath='/var
         for f in filenames:
             #print os.path.join(root,f)
             os.chmod(os.path.join(root,f), 0640)
-    os.chmod(path+'/.htaccess', 0640)
+    if os.path.exists(path+'/.htaccess'):
+        os.chmod(path+'/.htaccess', 0640)
     if dataPath is not None:
         chownR(dataPath,wwwUID,wwwGID)
         if os.path.exists(dataPath+'/.htaccess'):
@@ -272,97 +394,6 @@ def copytree(src, dst, symlinks=False, ignore=None):
             shutil.copytree(s, d, symlinks, ignore)
         else:
             shutil.copy2(s, d)
-
-##################################################################
-#Function Name: checkUpdate
-#Parameters:    configDict
-#Purpose:       check if an update is available
-#		@main
-##################################################################
-def checkUpdate(configDict):
-    # Exmample url syntax to query owncloud.com for update:
-    # https://apps.owncloud.com/updater.php?version=8x0x6x2xxxstablexx
-    secureHost="apps.owncloud.com"
-    version = 'x'.join([str(i) for i in configDict['ocVersion']])
-    #version = '8x0x6x2'
-    url="/updater.php?version=" +version+ "xxxstablexx"
-    print '\nChecking to see if an update is available using:\n\thttps://' + secureHost + url
-    connection = httplib.HTTPSConnection(secureHost)
-    connection.request("GET",url)
-    response = connection.getresponse()
-    print "\nResponse status from owncloud.com:  "
-    print response.status, response.reason
-    data=response.read()
-    print "\nownCloud.com returned this XML:"
-    print data
-    #xml = ET.ElementTree(ET.fromstring(data))
-    xml = ET.fromstring(data)
-    print "Reading the XML data . . ." 
-    #print xml
-    for element in xml.iter('versionstring'):
-        if element.text is not None:
-            updateVersionString=element.text
-            configDict['updateVersionString']=updateVersionString
-            print "\t" +element.text + " is available."
-    for element in xml.iter('url'):
-        if element.text is not None:
-            updateURL=element.text
-            print "\tCode:\t\t" + updateURL
-            configDict['updateURL']=updateURL
-            configDict['updateIsAvailable'] = True
-        else:
-            configDict['updateIsAvailable'] = False
-    for element in xml.iter('web'):
-        if element.text is not None:
-            print "\tInstructions:\t" + element.text
-
-    return configDict
-
-##################################################################
-#Function Name: backupOC
-#Parameters:    configDict
-#Purpose:       backup ownCloud
-#		@main
-##################################################################
-def backupOC(configDict):
-    configDict['backupDir']=configDict['backupRoot'] + '/oc_' + configDict['ocVersionString'] + '_' + configDict['backupTime']
-    configDict['backupDB']=configDict['backupRoot'] + '/owncloud_' + configDict['ocVersionString'] + '_' + configDict['backupTime'] +'.sql'
-    configDict=getOCconfig(configDict)
-    
-    # place owncloud server into maintenance mode
-    print "\n"
-    print "Placing owncloud server into maintainance mode..."
-    cmd = ['sudo','-u',configDict['wwwUser'], '/usr/bin/php', configDict['ocDir']+'/occ', 'maintenance:mode', '--on']
-    out, err = subprocess.Popen(cmd,stdout=subprocess.PIPE, stderr=subprocess.PIPE ).communicate()
-    print out
-    
-    # backup owncloud installation
-    print "\n"
-    print "Backing up owncloud code . . ."
-    print "\tcopying old code to backup directory"
-    shutil.copytree(configDict['ocDir'],configDict['backupDir'])
-    print "\tresetting secure permssions across backup"
-    securePermissions(configDict['backupDir'],configDict['wwwUser'],None)
-    
-    # backup owncloud database
-    print "\n"
-    print "Backing up owncloud database . . ."
-    #cmd = ['sudo','mysqldump','-v', '--result-file='+configDict['backupDB'],'-u','root', '-p', configDict['ocDB']]
-    cmd = ['sudo','mysqldump','--result-file='+configDict['backupDB'],'-u',configDict['dbUser'], '--password='+configDict['dbPwd'], configDict['ocDB']]
-    out, err = subprocess.Popen(cmd,stdout=subprocess.PIPE, stderr=subprocess.PIPE ).communicate()
-    print out
-    
-    with open(configDict['backupDB'],'rb') as backupDB, gzip.open(configDict['backupDB']+'.gz','wb') as gzipDB:
-        shutil.copyfileobj(backupDB,gzipDB)
-    backupDB.close()
-    gzipDB.close()
-    # remove backupDB
-    try:
-        os.remove(configDict['backupDB'])
-    except OSError, e:
-        print ("Error:  %s - %s." % (e.filename,e.strerror))
-        
-    return configDict
 
 ##################################################################
 #Function Name: downloadFile
@@ -408,91 +439,6 @@ def extractall(fn,dst="."):
             zf.close()
     else:
         print "Please provide a tar archive file or zip file containing the update."
-
-
-##################################################################
-#Function Name: installUpgrade
-#Parameters:    configDict
-#Purpose:       Install upgrade code
-#		@main
-##################################################################
-def installUpgrade(configDict):
-    # stopping web server
-    print "\n"
-    print "Stopping web server"
-    cmd = ['sudo','service','apache2', 'stop']
-    out, err = subprocess.Popen(cmd,stdout=subprocess.PIPE, stderr=subprocess.PIPE ).communicate()
-    print out
-
-    print "\n"
-    print "Setting up new release for installation . . ."
-        
-    if configDict['code'] is None and configDict['updateURL'] is not None:
-        # download new release
-        codeFileName=configDict['wwwRoot']+'/'+configDict['updateURL'].split('/')[-1]
-        downloadFile(configDict['updateURL'],codeFileName)
-    else:
-        codeFileName=configDict['code']
-
-    if tarfile.is_tarfile(codeFileName): 
-        #copytree(configDict['ocDir'],configDict['ocOld'])
-        try:
-            shutil.rmtree(configDict['ocDir'])
-        except OSError, e:
-            print ("Error:  %s - %s." % (e.filename,e.strerror))
-        extractall(codeFileName,configDict['wwwRoot']+'/')
-    elif zipfile.is_zipfile(codeFileName):
-        #copytree(configDict['ocDir'],configDict['ocOld'])
-        try:
-            shutil.rmtree(configDict['ocDir'])
-        except OSError, e:
-            print ("Error:  %s - %s." % (e.filename,e.strerror))
-        extractall(codeFileName,configDict['wwwRoot']+'/')
-    else:
-        print codeFileName + " does not seem to be a tarball or a zip file."
-        return False
-
-    # Restoring config.php
-    if os.path.isfile(configDict['backupDir']+'/config/config.php'):
-        print "\n"
-        print "Restoring config.php"
-        shutil.copy(configDict['backupDir']+'/config/config.php',configDict['ocDir']+'/config/config.php')
-    else:
-        print "You must restore config.php before running occ upgrade script; no backup was found in "+configDict['backupDir']
-    
-    # Setting secure permissions
-    print "\n"
-    print "Setting secure permissions . . ."
-    securePermissions(configDict['ocDir'],configDict['wwwUser'],configDict['dataPath'])
-
-    # stopping web server
-    print "\n"
-    print "Starting web server"
-    
-    cmd = ['sudo','service','apache2', 'start']
-    out, err = subprocess.Popen(cmd,stdout=subprocess.PIPE, stderr=subprocess.PIPE ).communicate()
-    print out
-    
-    # Check version
-    if checkOCVersion(configDict):
-        # Ask whether you want to run the upgrade script
-        question="Please check that updated code has been correctly installed in "+configDict['ocDir']+".\nDo you want to run the occ upgrade script?"
-        if askYesorNo(question,"yes") is "yes":
-            # Upgrade owncloud
-            print "\n"
-            print "Upgrading owncloud . . ."
-            cmd = ['sudo','-u',configDict['wwwUser'], '/usr/bin/php', configDict['ocDir']+'/occ', 'upgrade']
-            out, err = subprocess.Popen(cmd,stdout=subprocess.PIPE, stderr=subprocess.PIPE ).communicate()
-            print out
-    
-            # Disable maintenance mode
-            print "\n"
-            print "Taking owncloud online"
-            cmd = ['sudo','-u',configDict['wwwUser'], '/usr/bin/php', configDict['ocDir']+'/occ', 'maintenance:mode', '--off']
-            out, err = subprocess.Popen(cmd,stdout=subprocess.PIPE, stderr=subprocess.PIPE ).communicate()
-            print out
-    
-            print "Installation is complete . . ."
 
 ##################################################################
 #Function Name: askYesorNo
@@ -555,6 +501,8 @@ def main():
             ocOld.installUpgrade()
     if args.check:
         ocOld.checkUpdate()
+    if args.backup:
+        ocOld.backupOC()
     if args.install:
         # check if an update is available
         # if there is one
